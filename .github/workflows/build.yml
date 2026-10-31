@@ -19,6 +19,7 @@ jobs:
             -fobjc-arc -O1 -w -dynamiclib \
             -framework Foundation -framework UIKit -framework CoreImage \
             -framework QuartzCore -framework AVFoundation \
+            -framework CoreGraphics \
             -install_name @rpath/MeineKit.dylib \
             -o MeineKit.dylib $(ls *.m)
           ls -l MeineKit.dylib
