@@ -1,0 +1,31 @@
+name: build
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compile dylib
+        run: |
+          set -eux
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          xcrun clang -arch arm64 -isysroot "$SDK" -miphoneos-version-min=14.0 \
+            -fobjc-arc -O1 -w -dynamiclib \
+            -framework Foundation -framework UIKit -framework CoreImage \
+            -framework QuartzCore -framework AVFoundation \
+            -install_name @rpath/MeineKit.dylib \
+            -o MeineKit.dylib MeineKit.m
+          ls -l MeineKit.dylib
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MeineKit
+          path: MeineKit.dylib
+          if-no-files-found: error
