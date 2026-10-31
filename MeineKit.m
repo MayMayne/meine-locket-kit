@@ -317,23 +317,60 @@ static UIImage *MAvatarPic(void){
   }
   return best;
 }
-@interface MPProfileVC : UIViewController
+//  ảnh bìa lấy từ thư viện (lưu vào Documents, blur theo style mockup)
+static NSString *MCoverPath(void){
+  NSString *d=NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES).firstObject;
+  return [d stringByAppendingPathComponent:@"meine_cover.jpg"];
+}
+static UIImage *MCoverLoad(void){
+  return [[NSFileManager defaultManager] fileExistsAtPath:MCoverPath()]
+    ?[UIImage imageWithContentsOfFile:MCoverPath()]:nil;
+}
+static UIImage *MNorm(UIImage *im){
+  if(!im) return nil;
+  if(im.imageOrientation==UIImageOrientationUp && MAX(im.size.width,im.size.height)<=2048) return im;
+  CGFloat m=MAX(im.size.width,im.size.height), k=1.0;
+  if(m>2048) k=2048.0/m;
+  CGSize sz=CGSizeMake(im.size.width*k, im.size.height*k);
+  UIGraphicsBeginImageContextWithOptions(sz,NO,im.scale);
+  [im drawInRect:CGRectMake(0,0,sz.width,sz.height)];
+  UIImage *o=UIGraphicsGetImageFromCurrentImageContext();
+  UIGraphicsEndImageContext();
+  return o?:im;
+}
+static BOOL MCoverSave(UIImage *im){
+  NSData *d=UIImageJPEGRepresentation(MNorm(im),0.9);
+  return d?[d writeToFile:MCoverPath() atomically:YES]:NO;
+}
+@interface MPProfileVC : UIViewController <UIImagePickerControllerDelegate, UINavigationControllerDelegate>
 @end
 @implementation MPProfileVC{
-  UIImageView *_th1,*_th2; UILabel *_v1,*_v2;
+  UIImageView *_th1,*_th2,*_cover; UILabel *_v1,*_v2; UIImage *_src;
 }
 - (void)viewDidLoad{
   [super viewDidLoad];
   self.view.backgroundColor=[UIColor systemBackgroundColor];
-  UIImage *src=MAvatarPic();
-  // ảnh bìa blur (giống mockup)
-  UIImageView *cover=[[UIImageView alloc] init];
-  cover.frame=CGRectMake(0,0,self.view.bounds.size.width,210);
-  cover.autoresizingMask=UIViewAutoresizingFlexibleWidth;
-  cover.contentMode=UIViewContentModeScaleAspectFill; cover.clipsToBounds=YES;
-  cover.image=src?MBlur(src, 28):nil;
-  if(!cover.image) cover.backgroundColor=[UIColor systemGray4Color];
-  [self.view addSubview:cover];
+  UIImage *src=MAvatarPic(); _src=src;
+  // ẢNH BÌA: lấy từ thư viện (đã lưu) → blur nhẹ theo style mockup; chưa có thì tạm blur avatar
+  _cover=[[UIImageView alloc] init];
+  _cover.frame=CGRectMake(0,0,self.view.bounds.size.width,210);
+  _cover.autoresizingMask=UIViewAutoresizingFlexibleWidth;
+  _cover.contentMode=UIViewContentModeScaleAspectFill; _cover.clipsToBounds=YES;
+  UIImage *cov=MCoverLoad();
+  _cover.image=cov?MBlur(cov,28):(src?MBlur(src,28):nil);
+  if(!_cover.image) _cover.backgroundColor=[UIColor systemGray4Color];
+  _cover.userInteractionEnabled=YES;
+  [_cover addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(mp_pickCover)]];
+  [self.view addSubview:_cover];
+  // gợi ý nhỏ trên bìa
+  UILabel *hint=[[UILabel alloc] initWithFrame:CGRectMake(12,210-30,self.view.bounds.size.width-24,22)];
+  hint.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleTopMargin;
+  hint.text=@"  Chạm để chọn ảnh bìa từ thư viện";
+  hint.font=[UIFont systemFontOfSize:12];
+  hint.textColor=[UIColor whiteColor];
+  hint.backgroundColor=[UIColor colorWithWhite:0 alpha:0.35];
+  hint.layer.cornerRadius=11; hint.clipsToBounds=YES;
+  [self.view addSubview:hint];
   // nút đóng
   UIButton *close=[UIButton buttonWithType:UIButtonTypeSystem];
   [close setTitle:@"✕" forState:UIControlStateNormal];
@@ -378,6 +415,28 @@ static UIImage *MAvatarPic(void){
   _v1=(UILabel*)_th1.superview.subviews.lastObject;
   _th2=[self mp_cardAt:y0+76 target:@selector(mp_ring)];
   _v2=(UILabel*)_th2.superview.subviews.lastObject;
+  // hàng "by Meine" → mở link Telegram
+  UIView *byrow=[[UIView alloc] initWithFrame:CGRectMake(20,y0+76+64+12,self.view.bounds.size.width-40,56)];
+  byrow.autoresizingMask=UIViewAutoresizingFlexibleWidth;
+  byrow.backgroundColor=[UIColor systemBackgroundColor];
+  byrow.layer.cornerRadius=16; byrow.layer.borderWidth=1;
+  byrow.layer.borderColor=[UIColor systemGray4Color].CGColor;
+  byrow.userInteractionEnabled=YES;
+  [byrow addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(mp_byMeine)]];
+  [self.view addSubview:byrow];
+  UIImageView *logo=[[UIImageView alloc] initWithFrame:CGRectMake(14,14,96,28)];
+  logo.contentMode=UIViewContentModeScaleAspectFit;
+  logo.image=MImg(@"logo/meine-logo.png");
+  [byrow addSubview:logo];
+  UILabel *bt=[[UILabel alloc] initWithFrame:CGRectMake(124,7,byrow.bounds.size.width-138,22)];
+  bt.autoresizingMask=UIViewAutoresizingFlexibleWidth;
+  bt.text=@"by Meine"; bt.font=[UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
+  [byrow addSubview:bt];
+  UILabel *bs=[[UILabel alloc] initWithFrame:CGRectMake(124,30,byrow.bounds.size.width-138,19)];
+  bs.autoresizingMask=UIViewAutoresizingFlexibleWidth;
+  bs.text=@"t.me/erorr404909"; bs.font=[UIFont systemFontOfSize:12];
+  bs.textColor=[UIColor secondaryLabelColor];
+  [byrow addSubview:bs];
   [self mp_refresh];
 }
 - (UIImageView *)mp_cardAt:(CGFloat)y target:(SEL)t{
@@ -404,6 +463,8 @@ static UIImage *MAvatarPic(void){
   return th;
 }
 - (void)mp_refresh{
+  UIImage *cov=MCoverLoad();
+  if(cov) _cover.image=MBlur(cov,28);
   NSString *tid=MSelected(@"theme"), *rid=MSelected(@"ring");
   ((UILabel*)_th1.superview.subviews[1]).text=@"Theme máy ảnh";
   _v1.text=tid?MNameOf(@"theme",tid):@"Không dùng";
@@ -791,4 +852,4 @@ __attribute__((constructor)) static void MeineInit(void){
     } else MLog(@"SettingsMenuSheetViewController class MISSING");
     MLog(@"=== MeineKit ready ===");
   }
-}
+} 
