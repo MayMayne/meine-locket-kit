@@ -4,6 +4,8 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <CoreImage/CoreImage.h>
+#include <stdio.h>
+#include <time.h>
 
 #define kPrefTheme  @"MeineTheme"
 #define kPrefRing   @"MeineRing"
@@ -18,7 +20,27 @@
 #define kTagScan 771007
 
 static BOOL MLogOn(void){ return [[NSUserDefaults standardUserDefaults] boolForKey:@"MeineLog"]; }
-#define MLog(fmt,...) do{ if(MLogOn()) NSLog(@"[Meine] " fmt, ##__VA_ARGS__); }while(0)
+// log FILE luôn bật (cho chẩn đoán crash) — ghi Documents/meine.log, flush mỗi dòng
+static FILE *MFP(void){
+  static FILE *f; static dispatch_once_t o;
+  dispatch_once(&o,^{
+    NSString *d=NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES).firstObject;
+    NSString *p=[d stringByAppendingPathComponent:@"meine.log"];
+    f=fopen(p.fileSystemRepresentation,"a");
+    if(!f) f=fopen("/tmp/meine.log","a");
+    if(f) setvbuf(f,NULL,_IONBF,0);
+  });
+  return f;
+}
+static void MFileLog(NSString *s){
+  FILE *f=MFP(); if(!f) return;
+  char ts[16]; time_t t=time(NULL); struct tm tm={0};
+  localtime_r(&t,&tm); strftime(ts,sizeof ts,"%H:%M:%S",&tm);
+  fprintf(f,"[%s] %s\n",ts,s.UTF8String);
+  fflush(f);
+}
+#define MLog(fmt,...) do{ NSString *_ms=[NSString stringWithFormat:@"[Meine] " fmt, ##__VA_ARGS__]; \
+  MFileLog(_ms); if(MLogOn()) NSLog(@"%@",_ms); }while(0)
 
 static NSBundle *MBundle(void){
   static NSBundle *b=nil; static dispatch_once_t once;
@@ -543,9 +565,22 @@ static void MRingApply(UIView *pic){
   if(top.superview==win && top!=ov)
     [win insertSubview:ov aboveSubview:top];
 }
+static __thread BOOL gPicBusy;   // chống gọi lặp: hook khác (LocketFull6...) lookup lại IMP tại chỗ
 static void hk_picLayout(id self, SEL s){
+  static int gPicN; if(gPicN<6){ gPicN++;
+    MLog(@"pic enter#%d cls=%@",gPicN,NSStringFromClass(object_getClass(self))); }
   IMP o=MOrigGet(object_getClass(self),s);
-  if(o) ((void(*)(id,SEL))o)(self,s);
+  if(!o){
+    MLog(@"pic ORIG-MISSING cls=%@",NSStringFromClass(object_getClass(self)));
+  }else if(o==(IMP)hk_picLayout){
+    MLog(@"pic RECURSION-detected cls=%@",NSStringFromClass(object_getClass(self)));
+  }else if(gPicBusy){
+    MLog(@"pic NESTED-skip cls=%@",NSStringFromClass(object_getClass(self)));
+  }else{
+    gPicBusy=YES;
+    @try{ ((void(*)(id,SEL))o)(self,s); }
+    @finally{ gPicBusy=NO; }
+  }
   @try{ MRingApply((UIView*)self); }
   @catch(NSException *e){ MLog(@"ring exception: %@",e); }
 }
@@ -553,6 +588,7 @@ static void hk_picLayout(id self, SEL s){
 // ---------- hook settings sheet ----------
 static void (*o_viewDidLoad)(id,SEL);
 static void hk_viewDidLoad(id self, SEL s){
+  MLog(@"settings viewDidLoad vc=%@", NSStringFromClass(object_getClass(self)));
   if(o_viewDidLoad) o_viewDidLoad(self,s);
   MScan(((UIViewController*)self).view);
   __weak id wp=self;
@@ -566,6 +602,7 @@ static void hk_viewDidLoad(id self, SEL s){
 
 __attribute__((constructor)) static void MeineInit(void){
   @autoreleasepool{
+    MLog(@"=== MeineKit start (diag build) ===");
     MLog(@"loaded from %@", [MBundle() bundlePath]);
     MLog(@"themes=%lu rings=%lu",(unsigned long)MThemes().count,(unsigned long)MRings().count);
     MInstallCamHooks();
@@ -587,5 +624,6 @@ __attribute__((constructor)) static void MeineInit(void){
       }
       else MLog(@"viewDidLoad method MISSING");
     } else MLog(@"SettingsMenuSheetViewController class MISSING");
+    MLog(@"=== MeineKit ready ===");
   }
 }
