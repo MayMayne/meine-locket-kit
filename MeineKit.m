@@ -426,7 +426,7 @@ __attribute__((constructor)) static void MeineInit(void){
     Class c=NSClassFromString(@"_TtC15SettingsFeature31SettingsMenuSheetViewController");
     if(c){
       Method m=class_getInstanceMethod(c,@selector(viewDidLoad));
-      if(m){ o_viewDidLoad=method_getImplementation(m); method_setImplementation(m,(IMP)hk_viewDidLoad);
+      if(m){ o_viewDidLoad=(void(*)(id,SEL))method_getImplementation(m); method_setImplementation(m,(IMP)hk_viewDidLoad);
         MLog(@"swizzled SettingsMenuSheetViewController.viewDidLoad"); }
       else MLog(@"viewDidLoad method MISSING");
     } else MLog(@"SettingsMenuSheetViewController class MISSING");
