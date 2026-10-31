@@ -34,7 +34,16 @@ static NSString *MPath(NSString *rel){
   NSString *p=[base stringByAppendingPathComponent:rel];
   return [[NSFileManager defaultManager] fileExistsAtPath:p]?p:nil;
 }
-static UIImage *MImg(NSString *rel){ NSString *p=MPath(rel); return p?[UIImage imageWithContentsOfFile:p]:nil; }
+static UIImage *MImg(NSString *rel){
+  if(!rel.length) return nil;
+  static NSCache *cc; static dispatch_once_t o;
+  dispatch_once(&o,^{ cc=[NSCache new]; cc.countLimit=48; });
+  UIImage *im=[cc objectForKey:rel];
+  if(!im){ NSString *p=MPath(rel); if(!p) return nil;
+    im=[UIImage imageWithContentsOfFile:p];
+    if(im) [cc setObject:im forKey:rel]; }
+  return im;
+}
 
 // ---------- catalog ----------
 static NSArray *MSubdirs(NSString *rel){
@@ -293,7 +302,12 @@ static void MOrigSet(Class c, SEL s, IMP i){
 static BOOL MInstall(Class c, SEL s, IMP hk, const char *types){
   if(!c || !s || !hk) return NO;
   Method m=class_getInstanceMethod(c,s);
-  if(!m){ // không có ở cả c lẫn super → an toàn thêm mới
+  if(!m){
+    // chỉ thêm method mới khi vắng mặt là vô hại với table khác:
+    // numberOfSections mặc định system = 1, titleForHeader mặc định = nil
+    BOOL addable=(s==@selector(numberOfSectionsInTableView:) ||
+                  s==@selector(tableView:titleForHeaderInSection:));
+    if(!addable){ MLog(@"skip missing %s on %@", sel_getName(s), MKeyC(c)); return NO; }
     BOOL ok=class_addMethod(c,s,hk,types);
     if(ok) MOrigSet(c,s,NULL);
     return ok;
@@ -363,7 +377,9 @@ static id hk_cell(id ds, SEL s, UITableView *tv, NSIndexPath *ip){
     c.iv.image=MThumbFor(which, sel, CGSizeMake(32,32));
     return c;
   }
-  return o?o(ds,s,tv,ip):nil;
+  if(o) return o(ds,s,tv,ip);
+  // không bao giờ trả nil cell (UITableView exception)
+  return [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
 }
 static void hk_select(id ds, SEL s, UITableView *tv, NSIndexPath *ip){
   void (*o)(id,SEL,UITableView*,NSIndexPath*)=(void*)MOrigGet(object_getClass(ds),s);
@@ -377,7 +393,10 @@ static void hk_select(id ds, SEL s, UITableView *tv, NSIndexPath *ip){
 static CGFloat hk_height(id ds, SEL s, UITableView *tv, NSIndexPath *ip){
   CGFloat (*o)(id,SEL,UITableView*,NSIndexPath*)=(void*)MOrigGet(object_getClass(ds),s);
   if(MIsMyTable(tv) && ip.section==MOrigN(tv)) return 56;
-  return o?o(ds,s,tv,ip):-1;
+  if(o) return o(ds,s,tv,ip);
+  // không bao giờ ép -1/automatic khi delegate gốc không implement
+  if(tv && tv.rowHeight>0) return tv.rowHeight;
+  return 44;
 }
 
 static void MHookDSClass(Class c){
@@ -395,6 +414,13 @@ static void MHookDSClass(Class c){
 }
 static void MSetupTable(UITableView *tv){
   if(!tv || objc_getAssociatedObject(tv,kDone)) return;
+  // CHỈ đụng table của đúng SettingsMenuSheetViewController — table profile/menu khác bỏ qua
+  Class sheet=NSClassFromString(@"_TtC15SettingsFeature31SettingsMenuSheetViewController");
+  UIViewController *vc=MVCFor(tv);
+  if(sheet && ![vc isKindOfClass:sheet]){
+    MLog(@"skip foreign table vc=%@", NSStringFromClass([vc class]));
+    return;
+  }
   objc_setAssociatedObject(tv,kDone,@1,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
   objc_setAssociatedObject(tv,kMyTbl,@1,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
   MHookDSClass([tv.dataSource class]);
@@ -418,6 +444,7 @@ static void MOverlayUpdate(NSString *sel){
 static void hk_camLayout(id self, SEL s){
   IMP o=MOrigGet(object_getClass(self),s);
   if(o) ((void(*)(id,SEL))o)(self,s);
+  @try{
   UIView *v=((UIViewController*)self).view; if(!v) return;
   NSString *sel=MSelected(@"theme");
   UIView *ov=[v viewWithTag:kTagCam];
@@ -433,6 +460,7 @@ static void hk_camLayout(id self, SEL s){
   ov.frame=v.bounds;
   ((UIImageView*)ov).image=MImg([NSString stringWithFormat:@"themes/%@/frame.png",sel]);
   [v bringSubviewToFront:ov];
+  }@catch(NSException *e){ MLog(@"cam exception: %@",e); }
 }
 static void hk_picLayout(id self, SEL s);
 static void MInstallCamHooks(void){
@@ -444,56 +472,81 @@ static void MInstallCamHooks(void){
       MLog(@"cam layout hooked: %@",cn);
     else MLog(@"cam layout already/fail: %@",cn);
   }
-  Class pp=NSClassFromString(@"_TtC14ProfilePicture18ProfilePictureView");
-  if(pp && MInstall(pp,@selector(layoutSubviews),(IMP)hk_picLayout,ty))
-    MLog(@"profile picture hooked");
-  else MLog(@"profile picture NOT hooked");
+  // hook theo thứ tự: class con trước (nếu có), tránh MOrigGet walk dừng nhầm
+  for(NSString *cn in @[@"_TtC14ProfilePicture28ProfilePictureViewSelfSizing",
+                        @"_TtC14ProfilePicture35UnifiedProfilePictureViewSelfSizing",
+                        @"_TtC14ProfilePicture18ProfilePictureView"]){
+    Class pp=NSClassFromString(cn);
+    if(pp && MInstall(pp,@selector(layoutSubviews),(IMP)hk_picLayout,ty))
+      MLog(@"profile picture hooked: %@",cn);
+    else MLog(@"profile picture NOT hooked: %@",cn);
+  }
   [[NSNotificationCenter defaultCenter] addObserverForName:MKey(@"theme") object:nil
     queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *n){
       MOverlayUpdate(MSelected(@"theme"));
     }];
   [[NSNotificationCenter defaultCenter] addObserverForName:MKey(@"ring") object:nil
     queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *n){
-      (void)n; /* cập nhật vòng trên profile ở bước sau */
+      for(UIView *pic in MPics()){ [pic setNeedsLayout]; }
     }];
 }
 
 // ---------- vòng + huy hiệu lên avatar (ProfilePictureView) ----------
+static const void *kAssocOv=&kAssocOv;
+static NSHashTable *MPics(void){ static NSHashTable *t; static dispatch_once_t o;
+  dispatch_once(&o,^{ t=[NSHashTable weakObjectsHashTable]; }); return t; }
+// KHÔNG thêm subview vào chính ProfilePictureView: code gốc của app iterate/force-cast
+// subviews trong layoutSubviews → chèn UIView lạ vào là Swift trap. Đặt overlay ở window.
+static void MRingApply(UIView *pic){
+  if(![pic isKindOfClass:UIView.class]) return;
+  [MPics() addObject:pic];
+  UIWindow *win=pic.window;
+  UIView *ov=objc_getAssociatedObject(pic,kAssocOv);
+  NSDictionary *it=MItem(@"ring", MSelected(@"ring")?:@"");
+  if(!win || !it){
+    [ov removeFromSuperview];
+    objc_setAssociatedObject(pic,kAssocOv,nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    return;
+  }
+  CGRect r=[pic convertRect:pic.bounds toView:win];
+  if(r.size.width<4||r.size.height<4) return;
+  CGRect big=CGRectMake(r.origin.x-r.size.width*0.10, r.origin.y-r.size.height*0.10,
+                        r.size.width*1.20, r.size.height*1.20);
+  if(!ov || ov.superview!=win){
+    if(ov) [ov removeFromSuperview];
+    ov=[[UIView alloc] initWithFrame:big];
+    ov.userInteractionEnabled=NO; ov.backgroundColor=[UIColor clearColor]; ov.clipsToBounds=NO;
+    UIImageView *rv=[[UIImageView alloc] initWithFrame:ov.bounds];
+    rv.tag=kTagRingImg; rv.contentMode=UIViewContentModeScaleAspectFit;
+    rv.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
+    [ov addSubview:rv];
+    UIImageView *bv=[[UIImageView alloc] init];
+    bv.tag=kTagBadgeImg; bv.contentMode=UIViewContentModeScaleAspectFit;
+    [ov addSubview:bv];
+    [win addSubview:ov];
+    objc_setAssociatedObject(pic,kAssocOv,ov,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    MLog(@"ring overlay created (window-level)");
+  }
+  ov.frame=big;
+  ((UIImageView*)[ov viewWithTag:kTagRingImg]).image=MImg(it[@"ring"]);
+  UIImageView *bv=(UIImageView*)[ov viewWithTag:kTagBadgeImg];
+  bv.image=MImg(it[@"badge"]);
+  CGFloat bw=big.size.width*0.34;
+  CGFloat R=big.size.width*0.45;
+  CGFloat cx=big.size.width*0.5 + R*sin(50.0*M_PI/180.0);
+  CGFloat cy=big.size.height*0.5 - R*cos(50.0*M_PI/180.0);
+  bv.frame=CGRectMake(cx-bw*0.5, cy-bw*0.5, bw, bw);
+  // z-order: ngay phía trên nhánh của pic trong window (không trồi lên modal phía sau)
+  UIView *top=pic;
+  while(top.superview && top.superview!=win) top=top.superview;
+  if(top.superview==win && top!=ov)
+    [win insertSubview:ov aboveSubview:top];
+}
 static void hk_picLayout(id self, SEL s){
   IMP o=MOrigGet(object_getClass(self),s);
   if(o) ((void(*)(id,SEL))o)(self,s);
-  UIView *pic=(UIView*)self;
-  UIView *box=[pic viewWithTag:kTagRingBox];
-  NSString *rid=MSelected(@"ring");
-  if(!rid.length){ [box removeFromSuperview]; return; }
-  NSDictionary *it=MItem(@"ring",rid); if(!it) return;
-  CGFloat w=pic.bounds.size.width, h=pic.bounds.size.height;
-  if(w<4||h<4) return;
-  CGRect big=CGRectMake(-w*0.10, -h*0.10, w*1.20, h*1.20);
-  if(!box){
-    box=[[UIView alloc] initWithFrame:big];
-    box.tag=kTagRingBox; box.userInteractionEnabled=NO;
-    box.backgroundColor=[UIColor clearColor]; box.clipsToBounds=NO;
-    UIImageView *rv=[[UIImageView alloc] initWithFrame:box.bounds];
-    rv.tag=kTagRingImg; rv.contentMode=UIViewContentModeScaleAspectFit;
-    rv.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
-    [box addSubview:rv];
-    UIImageView *bv=[[UIImageView alloc] init];
-    bv.tag=kTagBadgeImg; bv.contentMode=UIViewContentModeScaleAspectFit;
-    [box addSubview:bv];
-    [pic addSubview:box];
-    MLog(@"ring overlay created");
-  }
-  box.frame=big;
-  ((UIImageView*)[box viewWithTag:kTagRingImg]).image=MImg(it[@"ring"]);
-  UIImageView *bv=(UIImageView*)[box viewWithTag:kTagBadgeImg];
-  bv.image=MImg(it[@"badge"]);
-  // badge ở góc ~50° so với phương đứng, đúng như set.json (offset right, straddle ring)
-  CGFloat bw=box.bounds.size.width*0.34;
-  CGFloat R=box.bounds.size.width*0.45;
-  CGFloat cx=box.bounds.size.width*0.5 + R*sin(50.0*M_PI/180.0);
-  CGFloat cy=box.bounds.size.height*0.5 - R*cos(50.0*M_PI/180.0);
-  bv.frame=CGRectMake(cx-bw*0.5, cy-bw*0.5, bw, bw);
+  @try{ MRingApply((UIView*)self); }
+  @catch(NSException *e){ MLog(@"ring exception: %@",e); }
 }
 
 // ---------- hook settings sheet ----------
@@ -517,9 +570,20 @@ __attribute__((constructor)) static void MeineInit(void){
     MInstallCamHooks();
     Class c=NSClassFromString(@"_TtC15SettingsFeature31SettingsMenuSheetViewController");
     if(c){
-      Method m=class_getInstanceMethod(c,@selector(viewDidLoad));
-      if(m){ o_viewDidLoad=(void(*)(id,SEL))method_getImplementation(m); method_setImplementation(m,(IMP)hk_viewDidLoad);
-        MLog(@"swizzled SettingsMenuSheetViewController.viewDidLoad"); }
+      SEL vl=@selector(viewDidLoad);
+      Method m=class_getInstanceMethod(c,vl);
+      if(m){
+        IMP orig=method_getImplementation(m);
+        const char *ty=method_getTypeEncoding(m)?: "v@:";
+        // phạm vi an toàn: KHÔNG sửa Method dùng chung của superclass
+        if(class_addMethod(c,vl,(IMP)hk_viewDidLoad,ty)){
+          o_viewDidLoad=(void(*)(id,SEL))orig;
+        }else{
+          Method own=class_getInstanceMethod(c,vl);
+          o_viewDidLoad=(void(*)(id,SEL))method_setImplementation(own,(IMP)hk_viewDidLoad);
+        }
+        MLog(@"swizzled SettingsMenuSheetViewController.viewDidLoad (scoped)");
+      }
       else MLog(@"viewDidLoad method MISSING");
     } else MLog(@"SettingsMenuSheetViewController class MISSING");
   }
