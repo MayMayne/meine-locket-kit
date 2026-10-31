@@ -20,7 +20,7 @@ jobs:
             -framework Foundation -framework UIKit -framework CoreImage \
             -framework QuartzCore -framework AVFoundation \
             -install_name @rpath/MeineKit.dylib \
-            -o MeineKit.dylib MeineKit.m
+            -o MeineKit.dylib $(ls *.m)
           ls -l MeineKit.dylib
 
       - name: Upload artifact
