@@ -22,6 +22,9 @@ jobs:
             -install_name @rpath/MeineKit.dylib \
             -o MeineKit.dylib $(ls *.m)
           ls -l MeineKit.dylib
+          codesign -s - --force -v MeineKit.dylib
+          codesign -d -v MeineKit.dylib 2>&1 | head -20 || true
+          ls -l MeineKit.dylib
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
