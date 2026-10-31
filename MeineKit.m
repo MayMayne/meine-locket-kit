@@ -303,24 +303,6 @@ static UIImage *MThumbFor(NSString *which, NSString *sid, CGSize size){
 static NSHashTable *MPics(void);
 static void MPresentPicker(UIViewController *from, NSString *which);
 // ---------- trang Profile (theo mockup: ảnh bìa blur + avatar lệch phải + 2 card) ----------
-static UIImage *MBlur(UIImage *im){
-  if(!im) return nil;
-  @try{
-    CIImage *ci=[[CIImage alloc] initWithImage:im];
-    if(!ci) return im;
-    CIFilter *f=[CIFilter filterWithName:@"CIGaussianBlur"];
-    [f setValue:ci forKey:kCIInputImageKey];
-    [f setValue:@(28) forKey:kCIInputRadiusKey];
-    CIImage *out=f.outputImage?:ci;
-    CGRect r=CGRectInset(ci.extent, -100, -100);
-    CIContext *ctx=[CIContext contextWithOptions:nil];
-    CGImageRef g=[ctx createCGImage:out fromRect:r];
-    if(!g) return im;
-    UIImage *o=[UIImage imageWithCGImage:g];
-    CGImageRelease(g);
-    return o;
-  }@catch(NSException *e){ MLog(@"blur fail: %@",e); return im; }
-}
 // ảnh avatar đang hiện trên màn hình (lớn nhất trong các pic đã thấy)
 static UIImage *MAvatarPic(void){
   UIImage *best=nil; CGFloat a=0;
@@ -349,7 +331,7 @@ static UIImage *MAvatarPic(void){
   cover.frame=CGRectMake(0,0,self.view.bounds.size.width,210);
   cover.autoresizingMask=UIViewAutoresizingFlexibleWidth;
   cover.contentMode=UIViewContentModeScaleAspectFill; cover.clipsToBounds=YES;
-  cover.image=src?MBlur(src):nil;
+  cover.image=src?MBlur(src, 28):nil;
   if(!cover.image) cover.backgroundColor=[UIColor systemGray4Color];
   [self.view addSubview:cover];
   // nút đóng
