@@ -463,6 +463,7 @@ static void hk_camLayout(id self, SEL s){
   }@catch(NSException *e){ MLog(@"cam exception: %@",e); }
 }
 static void hk_picLayout(id self, SEL s);
+static NSHashTable *MPics(void);
 static void MInstallCamHooks(void){
   const char *ty="v@:";
   for(NSString *cn in @[@"_TtC6Camera20CameraViewController",@"LFCameraViewController"]){
