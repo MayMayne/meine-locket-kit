@@ -300,6 +300,142 @@ static UIImage *MThumbFor(NSString *which, NSString *sid, CGSize size){
 }
 @end
 
+static NSHashTable *MPics(void);
+static void MPresentPicker(UIViewController *from, NSString *which);
+// ---------- trang Profile (theo mockup: ảnh bìa blur + avatar lệch phải + 2 card) ----------
+static UIImage *MBlur(UIImage *im){
+  if(!im) return nil;
+  @try{
+    CIImage *ci=[[CIImage alloc] initWithImage:im];
+    if(!ci) return im;
+    CIFilter *f=[CIFilter filterWithName:@"CIGaussianBlur"];
+    [f setValue:ci forKey:kCIInputImageKey];
+    [f setValue:@(28) forKey:kCIInputRadiusKey];
+    CIImage *out=f.outputImage?:ci;
+    CGRect r=CGRectInset(ci.extent, -100, -100);
+    CIContext *ctx=[CIContext contextWithOptions:nil];
+    CGImageRef g=[ctx createCGImage:out fromRect:r];
+    if(!g) return im;
+    UIImage *o=[UIImage imageWithCGImage:g];
+    CGImageRelease(g);
+    return o;
+  }@catch(NSException *e){ MLog(@"blur fail: %@",e); return im; }
+}
+// ảnh avatar đang hiện trên màn hình (lớn nhất trong các pic đã thấy)
+static UIImage *MAvatarPic(void){
+  UIImage *best=nil; CGFloat a=0;
+  for(UIView *pic in [MPics() allObjects]){
+    CGFloat ar=pic.bounds.size.width*pic.bounds.size.height;
+    if(ar<=0) continue;
+    UIImage *im=nil;
+    if([pic isKindOfClass:UIImageView.class]) im=((UIImageView*)pic).image;
+    if(!im) for(UIView *v in pic.subviews)
+      if([v isKindOfClass:UIImageView.class] && ((UIImageView*)v).image){ im=((UIImageView*)v).image; break; }
+    if(im && ar>a){ a=ar; best=im; }
+  }
+  return best;
+}
+@interface MPProfileVC : UIViewController
+@end
+@implementation MPProfileVC{
+  UIImageView *_th1,*_th2; UILabel *_v1,*_v2;
+}
+- (void)viewDidLoad{
+  [super viewDidLoad];
+  self.view.backgroundColor=[UIColor systemBackgroundColor];
+  UIImage *src=MAvatarPic();
+  // ảnh bìa blur (giống mockup)
+  UIImageView *cover=[[UIImageView alloc] init];
+  cover.frame=CGRectMake(0,0,self.view.bounds.size.width,210);
+  cover.autoresizingMask=UIViewAutoresizingFlexibleWidth;
+  cover.contentMode=UIViewContentModeScaleAspectFill; cover.clipsToBounds=YES;
+  cover.image=src?MBlur(src):nil;
+  if(!cover.image) cover.backgroundColor=[UIColor systemGray4Color];
+  [self.view addSubview:cover];
+  // nút đóng
+  UIButton *close=[UIButton buttonWithType:UIButtonTypeSystem];
+  [close setTitle:@"✕" forState:UIControlStateNormal];
+  close.titleLabel.font=[UIFont systemFontOfSize:22 weight:UIFontWeightBold];
+  [close setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+  close.frame=CGRectMake(self.view.bounds.size.width-54,46,40,40);
+  close.autoresizingMask=UIViewAutoresizingFlexibleLeftMargin;
+  [close addTarget:self action:@selector(mp_close) forControlEvents:UIControlEventTouchUpInside];
+  [self.view addSubview:close];
+  // avatar lớn, LỆCH PHẢI đè lên bìa (đúng mockup)
+  CGFloat aw=104;
+  CGFloat ax=self.view.bounds.size.width-24-aw;
+  CGFloat ay=210-aw/2;
+  UIImageView *av=[[UIImageView alloc] initWithFrame:CGRectMake(ax,ay,aw,aw)];
+  av.autoresizingMask=UIViewAutoresizingFlexibleLeftMargin;
+  av.contentMode=UIViewContentModeScaleAspectFill; av.clipsToBounds=YES;
+  av.layer.cornerRadius=aw/2; av.layer.borderWidth=3;
+  av.layer.borderColor=[UIColor systemBackgroundColor].CGColor;
+  av.image=src; av.backgroundColor=[UIColor systemGray3Color];
+  [self.view addSubview:av];
+  // vòng + huy hiệu (nếu đang chọn)
+  NSString *rid=MSelected(@"ring");
+  NSDictionary *it=rid?MItem(@"ring",rid):nil;
+  if(it){
+    CGFloat s=aw*1.2;
+    UIImageView *rv=[[UIImageView alloc] initWithFrame:CGRectMake(ax-(s-aw)/2, ay-(s-aw)/2, s, s)];
+    rv.autoresizingMask=UIViewAutoresizingFlexibleLeftMargin;
+    rv.contentMode=UIViewContentModeScaleAspectFit; rv.image=MImg(it[@"ring"]);
+    [self.view addSubview:rv];
+    UIImageView *bv=[[UIImageView alloc] init];
+    bv.autoresizingMask=UIViewAutoresizingFlexibleLeftMargin;
+    bv.contentMode=UIViewContentModeScaleAspectFit; bv.image=MImg(it[@"badge"]);
+    CGFloat bw=s*0.34, R=s*0.45;
+    CGFloat cx=s*0.5+R*sin(50.0*M_PI/180.0), cy=s*0.5-R*cos(50.0*M_PI/180.0);
+    CGRect rf=rv.frame;
+    bv.frame=CGRectMake(rf.origin.x+cx-bw*0.5, rf.origin.y+cy-bw*0.5, bw, bw);
+    [self.view addSubview:bv];
+  }
+  // 2 card Cá nhân hoá
+  CGFloat y0=210+aw/2+36;
+  _th1=[self mp_cardAt:y0 target:@selector(mp_theme)];
+  _v1=(UILabel*)_th1.superview.subviews.lastObject;
+  _th2=[self mp_cardAt:y0+76 target:@selector(mp_ring)];
+  _v2=(UILabel*)_th2.superview.subviews.lastObject;
+  [self mp_refresh];
+}
+- (UIImageView *)mp_cardAt:(CGFloat)y target:(SEL)t{
+  UIView *card=[[UIView alloc] initWithFrame:CGRectMake(20,y,self.view.bounds.size.width-40,64)];
+  card.autoresizingMask=UIViewAutoresizingFlexibleWidth;
+  card.backgroundColor=[UIColor systemGray6Color]; card.layer.cornerRadius=16;
+  card.userInteractionEnabled=YES;
+  UITapGestureRecognizer *g=[[UITapGestureRecognizer alloc] initWithTarget:self action:t];
+  [card addGestureRecognizer:g];
+  [self.view addSubview:card];
+  UIImageView *th=[[UIImageView alloc] initWithFrame:CGRectMake(14,14,36,36)];
+  th.contentMode=UIViewContentModeScaleAspectFill; th.clipsToBounds=YES; th.layer.cornerRadius=8;
+  [card addSubview:th];
+  UILabel *ttl=[[UILabel alloc] initWithFrame:CGRectMake(62,6,card.bounds.size.width-82,26)];
+  ttl.font=[UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
+  ttl.autoresizingMask=UIViewAutoresizingFlexibleWidth;
+  [card addSubview:ttl];
+  UILabel *v=[[UILabel alloc] initWithFrame:CGRectMake(62,32,card.bounds.size.width-82,24)];
+  v.font=[UIFont systemFontOfSize:13]; v.textColor=[UIColor secondaryLabelColor];
+  v.autoresizingMask=UIViewAutoresizingFlexibleWidth;
+  [card addSubview:v];
+  // tag để refresh nhận diện
+  th.tag=(t==@selector(mp_theme))?2909201:2909202;
+  return th;
+}
+- (void)mp_refresh{
+  NSString *tid=MSelected(@"theme"), *rid=MSelected(@"ring");
+  ((UILabel*)_th1.superview.subviews[1]).text=@"Theme máy ảnh";
+  _v1.text=tid?MNameOf(@"theme",tid):@"Không dùng";
+  _th1.image=MThumbFor(@"theme",tid,CGSizeMake(36,36));
+  ((UILabel*)_th2.superview.subviews[1]).text=@"Vòng & huy hiệu";
+  _v2.text=rid?MNameOf(@"ring",rid):@"Không dùng";
+  _th2.image=MThumbFor(@"ring",rid,CGSizeMake(36,36));
+}
+- (void)viewWillAppear:(BOOL)animated{ [super viewWillAppear:animated]; [self mp_refresh]; }
+- (void)mp_theme{ MPresentPicker(self,@"theme"); }
+- (void)mp_ring{ MPresentPicker(self,@"ring"); }
+- (void)mp_close{ [self dismissViewControllerAnimated:YES completion:nil]; }
+@end
+
 // ---------- settings table: thêm section "Cá nhân hoá" ----------
 static const void *kMyTbl=&kMyTbl; static const void *kOrigN=&kOrigN; static const void *kDone=&kDone;
 static NSMutableDictionary *MOrig(void){ static NSMutableDictionary *d; static dispatch_once_t o;
@@ -343,10 +479,6 @@ static BOOL MInstall(Class c, SEL s, IMP hk, const char *types){
   method_setImplementation(own,hk);
   return YES;
 }
-static BOOL MIsMyTable(UITableView *tv){ return tv && objc_getAssociatedObject(tv,kMyTbl); }
-static NSInteger MOrigN(UITableView *tv){
-  NSNumber *n=objc_getAssociatedObject(tv,kOrigN); return n?n.integerValue:0;
-}
 static UIViewController *MVCFor(UIView *v){
   UIResponder *r=v; while(r){ if([r isKindOfClass:UIViewController.class]) return (UIViewController*)r; r=r.nextResponder; }
   UIWindow *w=v.window; UIViewController *top=w.rootViewController;
@@ -366,68 +498,104 @@ static void MPresentPicker(UIViewController *from, NSString *which){
 }
 
 // --- wrappers ---
-// Số section THẬT (lưu lại khi UIKit hỏi); KHÔNG bịa section giả —
-// mọi API không hook (footer/canEdit/...) đều phải nhận index thật
+// MOrigN = số section THẬT (kOrigN lưu khi UIKit hỏi). MIsMySection = section giả của mình.
+static NSInteger MOrigN(UITableView *tv){
+  NSNumber *n=objc_getAssociatedObject(tv,kOrigN);
+  return n?n.integerValue:0;
+}
+static BOOL MIsMyTable(UITableView *tv){
+  return tv && objc_getAssociatedObject(tv,kMyTbl)!=nil;
+}
+static BOOL MIsMySection(UITableView *tv, NSInteger sec){
+  return MIsMyTable(tv) && sec==MOrigN(tv);
+}
 static NSInteger hk_numSec(id ds, SEL s, UITableView *tv){
   NSInteger (*o)(id,SEL,UITableView*)=(void*)MOrigGet(object_getClass(ds),s);
   NSInteger n=o?o(ds,s,tv):1;
-  if(MIsMyTable(tv))
+  if(MIsMyTable(tv)){
     objc_setAssociatedObject(tv,kOrigN,@(n),OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    return n+1;   // +1 section giả — nhưng MỌI API khác đều guard trước khi gọi orig
+  }
   return n;
 }
-// Trả base (index row đầu của ta) trong section CUỐI thật, hoặc NSNotFound.
-// Chỉ dùng index có thật → không thể gây trap phía code gốc.
-static NSInteger MMyBase(id ds, UITableView *tv, NSIndexPath *ip){
-  if(!MIsMyTable(tv)) return NSNotFound;
-  NSInteger last=MOrigN(tv)-1;
-  if(last<0 || ip.section!=last) return NSNotFound;
-  SEL r=@selector(tableView:numberOfRowsInSection:);
-  NSInteger (*o)(id,SEL,UITableView*,NSInteger)=(void*)MOrigGet(object_getClass(ds),r);
-  if(!o) return NSNotFound;
-  NSInteger base=o(ds,r,tv,last);
-  return (ip.row>=base && ip.row<base+2)?base:NSNotFound;
-}
+// GUARD TRƯỚC: chỉ gọi orig với section THẬT (không bao giờ hỏi code Swift section không tồn tại)
 static NSInteger hk_rows(id ds, SEL s, UITableView *tv, NSInteger sec){
+  if(MIsMySection(tv,sec)) return 3;   // Theme / Vòng-Huy hiệu / Trang hồ sơ
   NSInteger (*o)(id,SEL,UITableView*,NSInteger)=(void*)MOrigGet(object_getClass(ds),s);
-  NSInteger n=o?o(ds,s,tv,sec):0;
-  if(MIsMyTable(tv) && o && MOrigN(tv)>0 && sec==MOrigN(tv)-1) n+=2; // ghi nối 2 row vào section cuối
-  return n;
+  return o?o(ds,s,tv,sec):0;
 }
 static id hk_header(id ds, SEL s, UITableView *tv, NSInteger sec){
   id (*o)(id,SEL,UITableView*,NSInteger)=(void*)MOrigGet(object_getClass(ds),s);
-  return o?o(ds,s,tv,sec):nil;   // giữ header gốc của app
+  if(MIsMySection(tv,sec)) return @"Cá nhân hoá";
+  return o?o(ds,s,tv,sec):nil;
+}
+// sheet dùng viewForHeader (không dùng title) → cần hook riêng
+static id hk_viewForHeader(id ds, SEL s, UITableView *tv, NSInteger sec){
+  id (*o)(id,SEL,UITableView*,NSInteger)=(void*)MOrigGet(object_getClass(ds),s);
+  if(MIsMySection(tv,sec)){
+    UIView *v=[[UIView alloc] initWithFrame:CGRectMake(0,0,tv.bounds.size.width,40)];
+    UILabel *l=[[UILabel alloc] initWithFrame:CGRectMake(16,6,tv.bounds.size.width-32,28)];
+    l.autoresizingMask=UIViewAutoresizingFlexibleWidth;
+    l.text=@"Cá nhân hoá"; l.font=[UIFont boldSystemFontOfSize:15];
+    l.textColor=[UIColor secondaryLabelColor];
+    [v addSubview:l];
+    return v;
+  }
+  return o?o(ds,s,tv,sec):nil;
+}
+static CGFloat hk_heightForHeader(id ds, SEL s, UITableView *tv, NSInteger sec){
+  CGFloat (*o)(id,SEL,UITableView*,NSInteger)=(void*)MOrigGet(object_getClass(ds),s);
+  if(MIsMySection(tv,sec)) return 40;
+  return o?o(ds,s,tv,sec):40;
+}
+static id hk_viewForFooter(id ds, SEL s, UITableView *tv, NSInteger sec){
+  id (*o)(id,SEL,UITableView*,NSInteger)=(void*)MOrigGet(object_getClass(ds),s);
+  if(MIsMySection(tv,sec)) return nil;
+  return o?o(ds,s,tv,sec):nil;
+}
+static CGFloat hk_heightForFooter(id ds, SEL s, UITableView *tv, NSInteger sec){
+  CGFloat (*o)(id,SEL,UITableView*,NSInteger)=(void*)MOrigGet(object_getClass(ds),s);
+  if(MIsMySection(tv,sec)) return 0.01;
+  return o?o(ds,s,tv,sec):0.01;
 }
 static id hk_cell(id ds, SEL s, UITableView *tv, NSIndexPath *ip){
-  id (*o)(id,SEL,UITableView*,NSIndexPath*)=(void*)MOrigGet(object_getClass(ds),s);
-  NSInteger base=MMyBase(ds,tv,ip);
-  if(base!=NSNotFound){
+  if(MIsMySection(tv,ip.section)){
     MChoiceCell *c=[tv dequeueReusableCellWithIdentifier:@"meine.cell"];
     if(!c) c=[[MChoiceCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"meine.cell"];
-    BOOL isTheme=(ip.row==base);
-    NSString *which=isTheme?@"theme":@"ring";
-    NSString *sel=MSelected(which);
-    c.titleL.text=[NSString stringWithFormat:@"%@: %@", isTheme?@"Theme máy ảnh":@"Vòng & huy hiệu",
-                   sel?MNameOf(which,sel):@"Không dùng"];
-    c.iv.image=MThumbFor(which, sel, CGSizeMake(32,32));
+    if(ip.row==0){
+      NSString *sel=MSelected(@"theme");
+      c.titleL.text=[NSString stringWithFormat:@"Theme máy ảnh: %@", sel?MNameOf(@"theme",sel):@"Không dùng"];
+      c.iv.image=MThumbFor(@"theme",sel,CGSizeMake(32,32));
+    }else if(ip.row==1){
+      NSString *sel=MSelected(@"ring");
+      c.titleL.text=[NSString stringWithFormat:@"Vòng & huy hiệu: %@", sel?MNameOf(@"ring",sel):@"Không dùng"];
+      c.iv.image=MThumbFor(@"ring",sel,CGSizeMake(32,32));
+    }else{
+      c.titleL.text=@"Trang hồ sơ";
+      c.iv.image=MImg(@"profile/demo-locket-bia-13.jpg");
+    }
     return c;
   }
+  id (*o)(id,SEL,UITableView*,NSIndexPath*)=(void*)MOrigGet(object_getClass(ds),s);
   if(o) return o(ds,s,tv,ip);
   // không bao giờ trả nil cell (UITableView exception)
   return [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
 }
 static void hk_select(id ds, SEL s, UITableView *tv, NSIndexPath *ip){
-  void (*o)(id,SEL,UITableView*,NSIndexPath*)=(void*)MOrigGet(object_getClass(ds),s);
-  NSInteger base=MMyBase(ds,tv,ip);
-  if(base!=NSNotFound){
-    MPresentPicker(MVCFor(tv), ip.row==base?@"theme":@"ring");
+  if(MIsMySection(tv,ip.section)){
+    UIViewController *vc=MVCFor(tv);
+    if(ip.row==0) MPresentPicker(vc,@"theme");
+    else if(ip.row==1) MPresentPicker(vc,@"ring");
+    else if(vc) [vc presentViewController:[[MPProfileVC alloc] init] animated:YES completion:nil];
     [tv deselectRowAtIndexPath:ip animated:YES];
     return;
   }
+  void (*o)(id,SEL,UITableView*,NSIndexPath*)=(void*)MOrigGet(object_getClass(ds),s);
   if(o) o(ds,s,tv,ip);
 }
 static CGFloat hk_height(id ds, SEL s, UITableView *tv, NSIndexPath *ip){
+  if(MIsMySection(tv,ip.section)) return 56;
   CGFloat (*o)(id,SEL,UITableView*,NSIndexPath*)=(void*)MOrigGet(object_getClass(ds),s);
-  if(MMyBase(ds,tv,ip)!=NSNotFound) return 56;
   if(o) return o(ds,s,tv,ip);
   // không bao giờ ép -1/automatic khi delegate gốc không implement
   if(tv && tv.rowHeight>0) return tv.rowHeight;
@@ -445,6 +613,10 @@ static void MHookDSClass(Class c){
   MInstall(c,@selector(tableView:cellForRowAtIndexPath:),(IMP)hk_cell,"@@:@@");
   MInstall(c,@selector(tableView:didSelectRowAtIndexPath:),(IMP)hk_select,"v@:@@");
   MInstall(c,@selector(tableView:heightForRowAtIndexPath:),(IMP)hk_height,"d@:@@");
+  MInstall(c,@selector(tableView:viewForHeaderInSection:),(IMP)hk_viewForHeader,"@@:@q");
+  MInstall(c,@selector(tableView:heightForHeaderInSection:),(IMP)hk_heightForHeader,"d@:@q");
+  MInstall(c,@selector(tableView:viewForFooterInSection:),(IMP)hk_viewForFooter,"@@:@q");
+  MInstall(c,@selector(tableView:heightForFooterInSection:),(IMP)hk_heightForFooter,"d@:@q");
   MLog(@"hooked class %@", n);
 }
 static void MSetupTable(UITableView *tv){
@@ -536,19 +708,19 @@ static NSHashTable *MPics(void){ static NSHashTable *t; static dispatch_once_t o
 static void MRingApply(UIView *pic){
   if(![pic isKindOfClass:UIView.class]) return;
   [MPics() addObject:pic];
-  UIWindow *win=pic.window;
-  UIView *ov=objc_getAssociatedObject(pic,kAssocOv);
+  UIView *sp=pic.superview;
   NSDictionary *it=MItem(@"ring", MSelected(@"ring")?:@"");
-  if(!win || !it){
+  UIView *ov=objc_getAssociatedObject(pic,kAssocOv);
+  if(!sp || !it){
     [ov removeFromSuperview];
     objc_setAssociatedObject(pic,kAssocOv,nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     return;
   }
-  CGRect r=[pic convertRect:pic.bounds toView:win];
+  CGRect r=pic.frame;   // frame relative to superview — bám theo avatar mọi lúc (kể cả khi scroll)
   if(r.size.width<4||r.size.height<4) return;
   CGRect big=CGRectMake(r.origin.x-r.size.width*0.10, r.origin.y-r.size.height*0.10,
                         r.size.width*1.20, r.size.height*1.20);
-  if(!ov || ov.superview!=win){
+  if(!ov || ov.superview!=sp){
     if(ov) [ov removeFromSuperview];
     ov=[[UIView alloc] initWithFrame:big];
     ov.userInteractionEnabled=NO; ov.backgroundColor=[UIColor clearColor]; ov.clipsToBounds=NO;
@@ -559,9 +731,11 @@ static void MRingApply(UIView *pic){
     UIImageView *bv=[[UIImageView alloc] init];
     bv.tag=kTagBadgeImg; bv.contentMode=UIViewContentModeScaleAspectFit;
     [ov addSubview:bv];
-    [win addSubview:ov];
+    // ĐẶT LÀ EM CÙNG CHA CỦA AVATAR, ngay phía trên nó → z-order/position luôn đúng,
+    // theo scroll tự nhiên, không hiện ở màn hình khác
+    [sp insertSubview:ov aboveSubview:pic];
     objc_setAssociatedObject(pic,kAssocOv,ov,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    MLog(@"ring overlay created (window-level)");
+    MLog(@"ring overlay created (sibling) cls=%@",NSStringFromClass(object_getClass(pic)));
   }
   ov.frame=big;
   ((UIImageView*)[ov viewWithTag:kTagRingImg]).image=MImg(it[@"ring"]);
@@ -572,17 +746,12 @@ static void MRingApply(UIView *pic){
   CGFloat cx=big.size.width*0.5 + R*sin(50.0*M_PI/180.0);
   CGFloat cy=big.size.height*0.5 - R*cos(50.0*M_PI/180.0);
   bv.frame=CGRectMake(cx-bw*0.5, cy-bw*0.5, bw, bw);
-  // z-order: ngay phía trên nhánh của pic trong window (không trồi lên modal phía sau)
-  UIView *top=pic;
-  while(top.superview && top.superview!=win) top=top.superview;
-  if(top.superview==win && top!=ov)
-    [win insertSubview:ov aboveSubview:top];
 }
 static __thread BOOL gPicBusy;   // chống gọi lặp: hook khác (LocketFull6...) lookup lại IMP tại chỗ
 static void hk_picLayout(id self, SEL s){
-  static int gPicN; if(gPicN<50){ gPicN++;
-    if(gPicN<=6 || gPicN%10==0)
-      MLog(@"pic enter#%d cls=%@",gPicN,NSStringFromClass(object_getClass(self))); }
+  static int gPicN; gPicN++;
+    if(gPicN<=6 || (gPicN<=60 && gPicN%10==0) || gPicN%500==0)
+      MLog(@"pic enter#%d cls=%@",gPicN,NSStringFromClass(object_getClass(self)));
   IMP o=MOrigGet(object_getClass(self),s);
   if(!o){
     MLog(@"pic ORIG-MISSING cls=%@",NSStringFromClass(object_getClass(self)));
