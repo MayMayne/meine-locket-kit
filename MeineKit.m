@@ -366,32 +366,44 @@ static void MPresentPicker(UIViewController *from, NSString *which){
 }
 
 // --- wrappers ---
+// Số section THẬT (lưu lại khi UIKit hỏi); KHÔNG bịa section giả —
+// mọi API không hook (footer/canEdit/...) đều phải nhận index thật
 static NSInteger hk_numSec(id ds, SEL s, UITableView *tv){
   NSInteger (*o)(id,SEL,UITableView*)=(void*)MOrigGet(object_getClass(ds),s);
   NSInteger n=o?o(ds,s,tv):1;
-  if(MIsMyTable(tv)){
+  if(MIsMyTable(tv))
     objc_setAssociatedObject(tv,kOrigN,@(n),OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    return n+1;
-  }
   return n;
+}
+// Trả base (index row đầu của ta) trong section CUỐI thật, hoặc NSNotFound.
+// Chỉ dùng index có thật → không thể gây trap phía code gốc.
+static NSInteger MMyBase(id ds, UITableView *tv, NSIndexPath *ip){
+  if(!MIsMyTable(tv)) return NSNotFound;
+  NSInteger last=MOrigN(tv)-1;
+  if(last<0 || ip.section!=last) return NSNotFound;
+  SEL r=@selector(tableView:numberOfRowsInSection:);
+  NSInteger (*o)(id,SEL,UITableView*,NSInteger)=(void*)MOrigGet(object_getClass(ds),r);
+  if(!o) return NSNotFound;
+  NSInteger base=o(ds,r,tv,last);
+  return (ip.row>=base && ip.row<base+2)?base:NSNotFound;
 }
 static NSInteger hk_rows(id ds, SEL s, UITableView *tv, NSInteger sec){
   NSInteger (*o)(id,SEL,UITableView*,NSInteger)=(void*)MOrigGet(object_getClass(ds),s);
   NSInteger n=o?o(ds,s,tv,sec):0;
-  if(MIsMyTable(tv) && sec==MOrigN(tv)) return 2;
+  if(MIsMyTable(tv) && o && MOrigN(tv)>0 && sec==MOrigN(tv)-1) n+=2; // ghi nối 2 row vào section cuối
   return n;
 }
 static id hk_header(id ds, SEL s, UITableView *tv, NSInteger sec){
   id (*o)(id,SEL,UITableView*,NSInteger)=(void*)MOrigGet(object_getClass(ds),s);
-  if(MIsMyTable(tv) && sec==MOrigN(tv)) return @"Cá nhân hoá";
-  return o?o(ds,s,tv,sec):nil;
+  return o?o(ds,s,tv,sec):nil;   // giữ header gốc của app
 }
 static id hk_cell(id ds, SEL s, UITableView *tv, NSIndexPath *ip){
   id (*o)(id,SEL,UITableView*,NSIndexPath*)=(void*)MOrigGet(object_getClass(ds),s);
-  if(MIsMyTable(tv) && ip.section==MOrigN(tv)){
+  NSInteger base=MMyBase(ds,tv,ip);
+  if(base!=NSNotFound){
     MChoiceCell *c=[tv dequeueReusableCellWithIdentifier:@"meine.cell"];
     if(!c) c=[[MChoiceCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"meine.cell"];
-    BOOL isTheme=ip.row==0;
+    BOOL isTheme=(ip.row==base);
     NSString *which=isTheme?@"theme":@"ring";
     NSString *sel=MSelected(which);
     c.titleL.text=[NSString stringWithFormat:@"%@: %@", isTheme?@"Theme máy ảnh":@"Vòng & huy hiệu",
@@ -405,8 +417,9 @@ static id hk_cell(id ds, SEL s, UITableView *tv, NSIndexPath *ip){
 }
 static void hk_select(id ds, SEL s, UITableView *tv, NSIndexPath *ip){
   void (*o)(id,SEL,UITableView*,NSIndexPath*)=(void*)MOrigGet(object_getClass(ds),s);
-  if(MIsMyTable(tv) && ip.section==MOrigN(tv)){
-    MPresentPicker(MVCFor(tv), ip.row==0?@"theme":@"ring");
+  NSInteger base=MMyBase(ds,tv,ip);
+  if(base!=NSNotFound){
+    MPresentPicker(MVCFor(tv), ip.row==base?@"theme":@"ring");
     [tv deselectRowAtIndexPath:ip animated:YES];
     return;
   }
@@ -414,7 +427,7 @@ static void hk_select(id ds, SEL s, UITableView *tv, NSIndexPath *ip){
 }
 static CGFloat hk_height(id ds, SEL s, UITableView *tv, NSIndexPath *ip){
   CGFloat (*o)(id,SEL,UITableView*,NSIndexPath*)=(void*)MOrigGet(object_getClass(ds),s);
-  if(MIsMyTable(tv) && ip.section==MOrigN(tv)) return 56;
+  if(MMyBase(ds,tv,ip)!=NSNotFound) return 56;
   if(o) return o(ds,s,tv,ip);
   // không bao giờ ép -1/automatic khi delegate gốc không implement
   if(tv && tv.rowHeight>0) return tv.rowHeight;
@@ -567,8 +580,9 @@ static void MRingApply(UIView *pic){
 }
 static __thread BOOL gPicBusy;   // chống gọi lặp: hook khác (LocketFull6...) lookup lại IMP tại chỗ
 static void hk_picLayout(id self, SEL s){
-  static int gPicN; if(gPicN<6){ gPicN++;
-    MLog(@"pic enter#%d cls=%@",gPicN,NSStringFromClass(object_getClass(self))); }
+  static int gPicN; if(gPicN<50){ gPicN++;
+    if(gPicN<=6 || gPicN%10==0)
+      MLog(@"pic enter#%d cls=%@",gPicN,NSStringFromClass(object_getClass(self))); }
   IMP o=MOrigGet(object_getClass(self),s);
   if(!o){
     MLog(@"pic ORIG-MISSING cls=%@",NSStringFromClass(object_getClass(self)));
