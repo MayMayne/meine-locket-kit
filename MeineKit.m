@@ -164,7 +164,7 @@ static UIImage *MThumbFor(NSString *which, NSString *sid, CGSize size){
 @implementation MChoiceCell
 - (instancetype)initWithStyle:(UITableViewCellStyle)style reuseIdentifier:(NSString *)rid{
   self=[super initWithStyle:style reuseIdentifier:rid]; if(!self) return nil;
-  self.backgroundColor=UIColor.clearColor;
+  self.backgroundColor=[UIColor clearColor];
   self.titleL=[UILabel new]; self.titleL.font=[UIFont systemFontOfSize:17 weight:UIFontWeightMedium];
   self.titleL.textColor=UIColor.whiteColor; self.titleL.translatesAutoresizingMaskIntoConstraints=NO;
   [self.contentView addSubview:self.titleL];
@@ -204,7 +204,7 @@ static UIImage *MThumbFor(NSString *which, NSString *sid, CGSize size){
   fl.sectionInset=UIEdgeInsetsMake(16,16,16,16);
   self.cv=[[UICollectionView alloc] initWithFrame:self.view.bounds collectionViewLayout:fl];
   self.cv.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
-  self.cv.backgroundColor=UIColor.clearColor;
+  self.cv.backgroundColor=[UIColor clearColor];
   self.cv.dataSource=self; self.cv.delegate=self;
   [self.cv registerClass:UICollectionViewCell.class forCellWithReuseIdentifier:@"c"];
   [self.view addSubview:self.cv];
@@ -405,6 +405,97 @@ static void MScan(UIView *v){
   UITableView *tv=MFindTable(v); if(tv) MSetupTable(tv);
 }
 
+// ---------- theme lên camera preview ----------
+static void MOverlayUpdate(NSString *sel){
+  for(UIWindow *w in [UIApplication sharedApplication].windows){
+    UIView *ov=[w viewWithTag:kTagCam];
+    if(!ov) continue;
+    if(!sel.length){ [ov removeFromSuperview]; continue; }
+    if(![ov isKindOfClass:UIImageView.class]) continue;
+    ((UIImageView*)ov).image=MImg([NSString stringWithFormat:@"themes/%@/frame.png",sel]);
+  }
+}
+static void hk_camLayout(id self, SEL s){
+  IMP o=MOrigGet(object_getClass(self),s);
+  if(o) ((void(*)(id,SEL))o)(self,s);
+  UIView *v=((UIViewController*)self).view; if(!v) return;
+  NSString *sel=MSelected(@"theme");
+  UIView *ov=[v viewWithTag:kTagCam];
+  if(!sel.length){ [ov removeFromSuperview]; return; }
+  if(!ov || ![ov isKindOfClass:UIImageView.class]){
+    ov=[[UIImageView alloc] init];
+    ov.tag=kTagCam;
+    ((UIImageView*)ov).contentMode=UIViewContentModeScaleAspectFill;
+    ov.clipsToBounds=YES; ov.userInteractionEnabled=NO;
+    [v addSubview:ov];
+    MLog(@"camera overlay created on %@", NSStringFromClass(object_getClass(self)));
+  }
+  ov.frame=v.bounds;
+  ((UIImageView*)ov).image=MImg([NSString stringWithFormat:@"themes/%@/frame.png",sel]);
+  [v bringSubviewToFront:ov];
+}
+static void hk_picLayout(id self, SEL s);
+static void MInstallCamHooks(void){
+  const char *ty="v@:";
+  for(NSString *cn in @[@"_TtC6Camera20CameraViewController",@"LFCameraViewController"]){
+    Class c=NSClassFromString(cn);
+    if(!c){ MLog(@"cam class missing: %@",cn); continue; }
+    if(MInstall(c,@selector(viewDidLayoutSubviews),(IMP)hk_camLayout,ty))
+      MLog(@"cam layout hooked: %@",cn);
+    else MLog(@"cam layout already/fail: %@",cn);
+  }
+  Class pp=NSClassFromString(@"_TtC14ProfilePicture18ProfilePictureView");
+  if(pp && MInstall(pp,@selector(layoutSubviews),(IMP)hk_picLayout,ty))
+    MLog(@"profile picture hooked");
+  else MLog(@"profile picture NOT hooked");
+  [[NSNotificationCenter defaultCenter] addObserverForName:MKey(@"theme") object:nil
+    queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *n){
+      MOverlayUpdate(MSelected(@"theme"));
+    }];
+  [[NSNotificationCenter defaultCenter] addObserverForName:MKey(@"ring") object:nil
+    queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *n){
+      (void)n; /* cập nhật vòng trên profile ở bước sau */
+    }];
+}
+
+// ---------- vòng + huy hiệu lên avatar (ProfilePictureView) ----------
+static void hk_picLayout(id self, SEL s){
+  IMP o=MOrigGet(object_getClass(self),s);
+  if(o) ((void(*)(id,SEL))o)(self,s);
+  UIView *pic=(UIView*)self;
+  UIView *box=[pic viewWithTag:kTagRingBox];
+  NSString *rid=MSelected(@"ring");
+  if(!rid.length){ [box removeFromSuperview]; return; }
+  NSDictionary *it=MItem(@"ring",rid); if(!it) return;
+  CGFloat w=pic.bounds.size.width, h=pic.bounds.size.height;
+  if(w<4||h<4) return;
+  CGRect big=CGRectMake(-w*0.10, -h*0.10, w*1.20, h*1.20);
+  if(!box){
+    box=[[UIView alloc] initWithFrame:big];
+    box.tag=kTagRingBox; box.userInteractionEnabled=NO;
+    box.backgroundColor=[UIColor clearColor]; box.clipsToBounds=NO;
+    UIImageView *rv=[[UIImageView alloc] initWithFrame:box.bounds];
+    rv.tag=kTagRingImg; rv.contentMode=UIViewContentModeScaleAspectFit;
+    rv.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
+    [box addSubview:rv];
+    UIImageView *bv=[[UIImageView alloc] init];
+    bv.tag=kTagBadgeImg; bv.contentMode=UIViewContentModeScaleAspectFit;
+    [box addSubview:bv];
+    [pic addSubview:box];
+    MLog(@"ring overlay created");
+  }
+  box.frame=big;
+  ((UIImageView*)[box viewWithTag:kTagRingImg]).image=MImg(it[@"ring"]);
+  UIImageView *bv=(UIImageView*)[box viewWithTag:kTagBadgeImg];
+  bv.image=MImg(it[@"badge"]);
+  // badge ở góc ~50° so với phương đứng, đúng như set.json (offset right, straddle ring)
+  CGFloat bw=box.bounds.size.width*0.34;
+  CGFloat R=box.bounds.size.width*0.45;
+  CGFloat cx=box.bounds.size.width*0.5 + R*sin(50.0*M_PI/180.0);
+  CGFloat cy=box.bounds.size.height*0.5 - R*cos(50.0*M_PI/180.0);
+  bv.frame=CGRectMake(cx-bw*0.5, cy-bw*0.5, bw, bw);
+}
+
 // ---------- hook settings sheet ----------
 static void (*o_viewDidLoad)(id,SEL);
 static void hk_viewDidLoad(id self, SEL s){
@@ -423,6 +514,7 @@ __attribute__((constructor)) static void MeineInit(void){
   @autoreleasepool{
     MLog(@"loaded from %@", [MBundle() bundlePath]);
     MLog(@"themes=%lu rings=%lu",(unsigned long)MThemes().count,(unsigned long)MRings().count);
+    MInstallCamHooks();
     Class c=NSClassFromString(@"_TtC15SettingsFeature31SettingsMenuSheetViewController");
     if(c){
       Method m=class_getInstanceMethod(c,@selector(viewDidLoad));
