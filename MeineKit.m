@@ -343,6 +343,55 @@ static BOOL MCoverSave(UIImage *im){
   return d?[d writeToFile:MCoverPath() atomically:YES]:NO;
 }
 
+// ---------- bộ hook runtime (khôi phục) ----------
+static NSMutableDictionary *MOrig(void){ static NSMutableDictionary *d; static dispatch_once_t o;
+  dispatch_once(&o,^{d=[NSMutableDictionary new];}); return d; }
+static NSString *MKeyC(Class c){ return NSStringFromClass(c); }
+static IMP MOrigGet(Class c, SEL s){
+  while(c){
+    NSDictionary *dd=MOrig()[MKeyC(c)];
+    NSValue *v=dd[NSStringFromSelector(s)];
+    if(v) return (IMP)[v pointerValue];
+    c=class_getSuperclass(c);
+  }
+  return NULL;
+}
+static void MOrigSet(Class c, SEL s, IMP i){
+  NSString *n=MKeyC(c);
+  NSMutableDictionary *dd=MOrig()[n]; if(!dd){ dd=[NSMutableDictionary new]; MOrig()[n]=dd; }
+  dd[NSStringFromSelector(s)]=[NSValue valueWithPointer:i];
+}
+static BOOL MInstall(Class c, SEL s, IMP hk, const char *types){
+  if(!c || !s || !hk) return NO;
+  Method m=class_getInstanceMethod(c,s);
+  if(!m){
+    BOOL addable=(s==@selector(numberOfSectionsInTableView:) ||
+                  s==@selector(tableView:titleForHeaderInSection:));
+    if(!addable){ MLog(@"skip missing %s on %@", sel_getName(s), MKeyC(c)); return NO; }
+    BOOL ok=class_addMethod(c,s,hk,types);
+    if(ok) MOrigSet(c,s,NULL);
+    return ok;
+  }
+  IMP orig=method_getImplementation(m);
+  if(MOrigGet(c,s)) return NO; // đã hook rồi
+  MOrigSet(c,s,orig);
+  if(class_addMethod(c,s,hk,types)) return YES;
+  Method own=class_getInstanceMethod(c,s);
+  method_setImplementation(own,hk);
+  return YES;
+}
+static void MPresentPicker(UIViewController *from, NSString *which){
+  if(!from) return;
+  MPicker *p=[[MPicker alloc] initWithWhich:which];
+  UINavigationController *nav=[[UINavigationController alloc] initWithRootViewController:p];
+  nav.modalPresentationStyle=UIModalPresentationPageSheet;
+  if(nav.sheetPresentationController){
+    nav.sheetPresentationController.detents=@[UISheetPresentationControllerDetent.largeDetent];
+    nav.sheetPresentationController.prefersGrabberVisible=YES;
+  }
+  [from presentViewController:nav animated:YES completion:nil];
+}
+
 // ---------- "Cá nhân hoá" chèn vào TRANG PROFILE THẬT ----------
 // KHÔNG đụng dataSource/delegate (không bao giờ trap index): toàn bộ nội dung nằm trong
 // tableHeaderView = [ảnh bìa từ thư viện] + [header profile gốc của app] + [khối MOD].
